@@ -1,5 +1,5 @@
 // Kompletny kod pre IdeaSpark ESP8266 v2.1
-// WiFiManager + MQTT (s menom/heslom) + OLED + LittleFS config + DS18B20 + reset tlacitkom
+// WiFiManager + MQTT (s menom/heslom) + OLED + LittleFS config + DS18B20 + reset tlacitkom + extra teplota na velkom casovom displeji
 
 #include <FS.h>
 #include <LittleFS.h>
@@ -35,12 +35,12 @@ PubSubClient mqtt(espClient);
 
 // Configuration storage
 struct Config {
-  char mqtt_host[40]    = "192.168.1.100";
-  int  mqtt_port        = 1883;
-  char mqtt_topic[64]   = "ideaspark/status";
-  char device_name[32]  = "ESP8266";
-  char mqtt_user[32]    = "";
-  char mqtt_pass[32]    = "";
+  char mqtt_host[40];
+  int  mqtt_port;
+  char mqtt_topic[64];
+  char device_name[32];
+  char mqtt_user[32];
+  char mqtt_pass[32];
 };
 Config config;
 bool shouldSaveConfig = false;
@@ -119,13 +119,14 @@ void setup() {
   display.setCursor(0, 0);
   display.println("WiFi konfiguracia...");
   display.display();
-  
-  // Temperature sensor
+  delay(500);
+
+  // Temperature sensor init
   sensors.begin();
-  
+
   // Load saved config
   loadConfig();
-  
+
   // WiFiManager with custom params
   WiFiManager wm;
   wm.setSaveConfigCallback(saveConfigCallback);
@@ -144,7 +145,7 @@ void setup() {
   if (!wm.autoConnect("IdeaSpark-Setup", "setup1234")) {
     ESP.restart();
   }
-  
+
   // Copy new settings
   strlcpy(config.mqtt_host,   pmh.getValue(),   sizeof(config.mqtt_host));
   config.mqtt_port            = atoi(pmp.getValue());
@@ -153,10 +154,10 @@ void setup() {
   strlcpy(config.mqtt_user,   pmu.getValue(),   sizeof(config.mqtt_user));
   strlcpy(config.mqtt_pass,   pmpw.getValue(),  sizeof(config.mqtt_pass));
   if (shouldSaveConfig) saveConfig();
-  
+
   // MQTT setup
   mqtt.setServer(config.mqtt_host, config.mqtt_port);
-  
+
   // NTP
   configTime(3600, 0, "pool.ntp.org", "time.nist.gov");
 }
@@ -167,26 +168,33 @@ void loop() {
     if (buttonStart == 0) buttonStart = millis();
     else if (!buttonHeld && millis() - buttonStart > 3000) {
       buttonHeld = true;
-      display.clearDisplay(); display.setCursor(0, 0);
-      display.println("Reset config..."); display.display(); delay(1000);
-      WiFiManager wm; wm.resetSettings(); LittleFS.remove("/config.json"); ESP.restart();
+      display.clearDisplay();
+      display.setCursor(0, 0);
+      display.println("Reset config...");
+      display.display();
+      delay(1000);
+      WiFiManager wm;
+      wm.resetSettings();
+      LittleFS.remove("/config.json");
+      ESP.restart();
     }
   } else {
     if (buttonStart != 0 && !buttonHeld && millis() - buttonStart > 50) {
       currentScreen = (currentScreen + 1) % 2;
     }
-    buttonStart = 0; buttonHeld = false;
+    buttonStart = 0;
+    buttonHeld = false;
   }
-  
+
   // MQTT keepalive
   if (!mqtt.connected()) mqttReconnect();
   mqtt.loop();
-  
+
   // Read temperature
   sensors.requestTemperatures();
   float tempC = sensors.getTempCByIndex(0);
   bool validTemp = (tempC > -100);
-  
+
   // Publish every 30s
   if (millis() - lastMqtt > 30000) {
     time_t now = time(nullptr);
@@ -203,7 +211,7 @@ void loop() {
     mqtt.publish(config.mqtt_topic, payload.c_str());
     lastMqtt = millis();
   }
-  
+
   // Display update
   time_t now = time(nullptr);
   struct tm* ti = localtime(&now);
@@ -218,15 +226,16 @@ void loop() {
     display.println(config.device_name);
     display.print("IP: "); display.println(WiFi.localIP());
     display.print("RSSI: "); display.print(WiFi.RSSI()); display.println(" dBm");
-    display.print("Temp: ");
-    if (validTemp) display.print(String(tempC,1)); else display.print("--.-");
-    display.println(" C");
+    display.print("Temp: "); if (validTemp) display.print(String(tempC,1)); else display.print("--.-"); display.println(" C");
     display.print("Cas: "); display.println(timeBuf2);
   } else {
     display.setTextSize(2);
     display.println(timeBuf2);
+    display.setTextSize(3);
+    display.setCursor(0, SCREEN_HEIGHT - 24);
+    display.print("C:"); if (validTemp) display.print(String(tempC,2)); else display.print("--.-"); display.println(" C");
   }
   display.display();
-  
+
   delay(100);
 }
