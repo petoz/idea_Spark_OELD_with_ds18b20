@@ -15,33 +15,25 @@
 #include <time.h>
 
 // Pin definitions
-#define SDA_PIN       D6     // GPIO12
-#define SCL_PIN       D5     // GPIO14
-#define BUTTON_PIN    D3     // GPIO0
-#define ONE_WIRE_PIN  D7     // GPIO13 for DS18B20
-#define OLED_RESET    -1
-#define SCREEN_WIDTH  128
+#define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
+#define OLED_RESET   -1
+#define SDA_PIN      D6  // GPIO12
+#define SCL_PIN      D5  // GPIO14
+#define BUTTON_PIN   D3  // GPIO0
+#define ONE_WIRE_PIN D7  // GPIO13 for DS18B20
 
 // OLED display
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
-
-// OneWire and temperature sensor
+// Temperature sensor
 OneWire oneWire(ONE_WIRE_PIN);
 DallasTemperature sensors(&oneWire);
 
-// MQTT and WiFi
+// MQTT client
 WiFiClient espClient;
 PubSubClient mqtt(espClient);
 
-// Timing and state
-unsigned long lastMqtt = 0;
-unsigned long buttonDownSince = 0;
-bool buttonHeld = false;
-int currentScreen = 0;
-bool shouldSaveConfig = false;
-
-// Configuration struct
+// Configuration storage
 struct Config {
   char mqtt_host[40]    = "192.168.1.100";
   int  mqtt_port        = 1883;
@@ -49,32 +41,41 @@ struct Config {
   char device_name[32]  = "ESP8266";
   char mqtt_user[32]    = "";
   char mqtt_pass[32]    = "";
-} config;
+};
+Config config;
+bool shouldSaveConfig = false;
 
-// Callback for WiFiManager when saving config
+// State
+int currentScreen = 0;
+unsigned long lastMqtt    = 0;
+unsigned long buttonStart = 0;
+bool buttonHeld = false;
+
+// Callback when WiFiManager saves config
 void saveConfigCallback() {
   shouldSaveConfig = true;
 }
 
-// Load config from LittleFS
+// Load settings from LittleFS
 void loadConfig() {
   if (!LittleFS.begin()) return;
   File f = LittleFS.open("/config.json", "r");
   if (!f) return;
-  StaticJsonDocument<512> doc;
-  if (deserializeJson(doc, f) != DeserializationError::Ok) { f.close(); return; }
-  strlcpy(config.mqtt_host,   doc["mqtt_host"]   | "", sizeof(config.mqtt_host));
-  config.mqtt_port            = doc["mqtt_port"]   | 1883;
-  strlcpy(config.mqtt_topic,  doc["mqtt_topic"]  | "", sizeof(config.mqtt_topic));
-  strlcpy(config.device_name, doc["device_name"] | "", sizeof(config.device_name));
-  strlcpy(config.mqtt_user,   doc["mqtt_user"]   | "", sizeof(config.mqtt_user));
-  strlcpy(config.mqtt_pass,   doc["mqtt_pass"]   | "", sizeof(config.mqtt_pass));
+  DynamicJsonDocument doc(512);
+  if (deserializeJson(doc, f) == DeserializationError::Ok) {
+    strlcpy(config.mqtt_host,   doc["mqtt_host"],   sizeof(config.mqtt_host));
+    config.mqtt_port            = doc["mqtt_port"];
+    strlcpy(config.mqtt_topic,  doc["mqtt_topic"],  sizeof(config.mqtt_topic));
+    strlcpy(config.device_name, doc["device_name"], sizeof(config.device_name));
+    strlcpy(config.mqtt_user,   doc["mqtt_user"],   sizeof(config.mqtt_user));
+    strlcpy(config.mqtt_pass,   doc["mqtt_pass"],   sizeof(config.mqtt_pass));
+  }
   f.close();
 }
 
-// Save config to LittleFS
+// Save settings to LittleFS
 void saveConfig() {
-  StaticJsonDocument<512> doc;
+  DynamicJsonDocument doc(512);
   doc["mqtt_host"]   = config.mqtt_host;
   doc["mqtt_port"]   = config.mqtt_port;
   doc["mqtt_topic"]  = config.mqtt_topic;
@@ -94,8 +95,7 @@ void mqttReconnect() {
     if (mqtt.connect(clientId.c_str(), config.mqtt_user, config.mqtt_pass)) {
       Serial.println("MQTT connected");
     } else {
-      Serial.print("MQTT failed rc=");
-      Serial.println(mqtt.state());
+      Serial.print("MQTT failed rc="); Serial.println(mqtt.state());
       delay(2000);
     }
   }
@@ -103,134 +103,130 @@ void mqttReconnect() {
 
 void setup() {
   Serial.begin(115200);
-
-  // Initialize I2C and display early
+  // I2C for OLED
   Wire.begin(SDA_PIN, SCL_PIN);
   Wire.setClock(100000);
+  // Button
   pinMode(BUTTON_PIN, INPUT_PULLUP);
-
+  // OLED init
   if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println("OLED init failed");
-  } else {
-    display.clearDisplay();
-    display.setTextSize(1);
-    display.setCursor(0, 0);
-    display.println("Inicializujem...");
-    display.display();
-    delay(500);
+    Serial.println("SSD1306 init failed");
+    for (;;) ;
   }
-
-  // Initialize temperature sensor
+  display.setTextColor(SSD1306_WHITE);
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.println("WiFi konfiguracia...");
+  display.display();
+  
+  // Temperature sensor
   sensors.begin();
-
-  // Load existing config
+  
+  // Load saved config
   loadConfig();
-
-  // WiFiManager setup
+  
+  // WiFiManager with custom params
   WiFiManager wm;
   wm.setSaveConfigCallback(saveConfigCallback);
-
-  WiFiManagerParameter p_mqtt_host("mqtt",      "MQTT host",     config.mqtt_host,    40);
-  WiFiManagerParameter p_mqtt_port("port",      "MQTT port",     String(config.mqtt_port).c_str(), 6);
-  WiFiManagerParameter p_mqtt_topic("topic",    "MQTT topic",    config.mqtt_topic,   64);
-  WiFiManagerParameter p_devname("devname",     "Device name",   config.device_name,  32);
-  WiFiManagerParameter p_mqtt_user("mqtt_user", "MQTT user",     config.mqtt_user,    32);
-  WiFiManagerParameter p_mqtt_pass("mqtt_pass", "MQTT password", config.mqtt_pass,    32);
-
-  wm.addParameter(&p_mqtt_host);
-  wm.addParameter(&p_mqtt_port);
-  wm.addParameter(&p_mqtt_topic);
-  wm.addParameter(&p_devname);
-  wm.addParameter(&p_mqtt_user);
-  wm.addParameter(&p_mqtt_pass);
-
+  WiFiManagerParameter pmh("mqtt",      "MQTT host",     config.mqtt_host,    40);
+  WiFiManagerParameter pmp("port",      "MQTT port",     String(config.mqtt_port).c_str(), 6);
+  WiFiManagerParameter pmt("topic",     "MQTT topic",    config.mqtt_topic,   64);
+  WiFiManagerParameter pdn("devname",   "Device name",   config.device_name,  32);
+  WiFiManagerParameter pmu("mqtt_user", "MQTT user",     config.mqtt_user,    32);
+  WiFiManagerParameter pmpw("mqtt_pass","MQTT password", config.mqtt_pass,    32);
+  wm.addParameter(&pmh);
+  wm.addParameter(&pmp);
+  wm.addParameter(&pmt);
+  wm.addParameter(&pdn);
+  wm.addParameter(&pmu);
+  wm.addParameter(&pmpw);
   if (!wm.autoConnect("IdeaSpark-Setup", "setup1234")) {
     ESP.restart();
   }
-
-  // Save new config values
-  strlcpy(config.mqtt_host,   p_mqtt_host.getValue(),   sizeof(config.mqtt_host));
-  config.mqtt_port            = atoi(p_mqtt_port.getValue());
-  strlcpy(config.mqtt_topic,  p_mqtt_topic.getValue(),  sizeof(config.mqtt_topic));
-  strlcpy(config.device_name, p_devname.getValue(),     sizeof(config.device_name));
-  strlcpy(config.mqtt_user,   p_mqtt_user.getValue(),   sizeof(config.mqtt_user));
-  strlcpy(config.mqtt_pass,   p_mqtt_pass.getValue(),   sizeof(config.mqtt_pass));
-
+  
+  // Copy new settings
+  strlcpy(config.mqtt_host,   pmh.getValue(),   sizeof(config.mqtt_host));
+  config.mqtt_port            = atoi(pmp.getValue());
+  strlcpy(config.mqtt_topic,  pmt.getValue(),   sizeof(config.mqtt_topic));
+  strlcpy(config.device_name, pdn.getValue(),   sizeof(config.device_name));
+  strlcpy(config.mqtt_user,   pmu.getValue(),   sizeof(config.mqtt_user));
+  strlcpy(config.mqtt_pass,   pmpw.getValue(),  sizeof(config.mqtt_pass));
   if (shouldSaveConfig) saveConfig();
-
-  // Setup MQTT
+  
+  // MQTT setup
   mqtt.setServer(config.mqtt_host, config.mqtt_port);
-
-  // Setup NTP time
+  
+  // NTP
   configTime(3600, 0, "pool.ntp.org", "time.nist.gov");
 }
 
 void loop() {
-  int btn = digitalRead(BUTTON_PIN);
-  if (btn == LOW) {
-    if (buttonDownSince == 0) {
-      buttonDownSince = millis();
-    } else if (!buttonHeld && millis() - buttonDownSince > 3000) {
+  // Button handling
+  if (digitalRead(BUTTON_PIN) == LOW) {
+    if (buttonStart == 0) buttonStart = millis();
+    else if (!buttonHeld && millis() - buttonStart > 3000) {
       buttonHeld = true;
-      display.clearDisplay();
-      display.setCursor(0, 0);
-      display.println("Reset config...");
-      display.display();
-      delay(1000);
-      WiFiManager wm;
-      wm.resetSettings();
-      LittleFS.remove("/config.json");
-      ESP.restart();
+      display.clearDisplay(); display.setCursor(0, 0);
+      display.println("Reset config..."); display.display(); delay(1000);
+      WiFiManager wm; wm.resetSettings(); LittleFS.remove("/config.json"); ESP.restart();
     }
   } else {
-    if (buttonDownSince != 0 && !buttonHeld && millis() - buttonDownSince > 100) {
+    if (buttonStart != 0 && !buttonHeld && millis() - buttonStart > 50) {
       currentScreen = (currentScreen + 1) % 2;
     }
-    buttonDownSince = 0;
-    buttonHeld = false;
+    buttonStart = 0; buttonHeld = false;
   }
-
-  // Ensure MQTT
+  
+  // MQTT keepalive
   if (!mqtt.connected()) mqttReconnect();
   mqtt.loop();
-
+  
   // Read temperature
   sensors.requestTemperatures();
   float tempC = sensors.getTempCByIndex(0);
-
-  // Publish MQTT every 30s
+  bool validTemp = (tempC > -100);
+  
+  // Publish every 30s
   if (millis() - lastMqtt > 30000) {
     time_t now = time(nullptr);
     struct tm* t = localtime(&now);
-    String payload = "{";
-    payload += "\"ip\":\"" + WiFi.localIP().toString() + "\",";
-    payload += "\"ssid\":\"" + String(WiFi.SSID()) + "\",";
-    payload += "\"rssi\":" + String(WiFi.RSSI()) + ",";
-    payload += "\"uptime\":" + String(millis() / 1000) + ",";
-    payload += "\"time\":\"" + String(t->tm_hour) + ":" + (t->tm_min<10?"0":"") + String(t->tm_min) + ":" + (t->tm_sec<10?"0":"") + String(t->tm_sec) + "\",";
-    payload += "\"temperature\":" + String(tempC,1) + "}";
+    char timeBuf[9];
+    snprintf(timeBuf, sizeof(timeBuf), "%02d:%02d:%02d", t->tm_hour, t->tm_min, t->tm_sec);
+    String payload = String("{") +
+      "\"ip\":\"" + WiFi.localIP().toString() + "\"," +
+      "\"ssid\":\"" + String(WiFi.SSID()) + "\"," +
+      "\"rssi\":" + String(WiFi.RSSI()) + "," +
+      "\"uptime\":" + String(millis()/1000) + "," +
+      "\"time\":\"" + timeBuf + "\"," +
+      "\"temperature\":\"" + (validTemp ? String(tempC,1) : String("--.-")) + "\"}";
     mqtt.publish(config.mqtt_topic, payload.c_str());
     lastMqtt = millis();
   }
-
-  // Display info
+  
+  // Display update
   time_t now = time(nullptr);
-  struct tm* timeinfo = localtime(&now);
+  struct tm* ti = localtime(&now);
+  char timeBuf2[9];
+  snprintf(timeBuf2, sizeof(timeBuf2), "%02d:%02d:%02d", ti->tm_hour, ti->tm_min, ti->tm_sec);
+
   display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
   display.setCursor(0, 0);
   if (currentScreen == 0) {
     display.setTextSize(1);
     display.println(config.device_name);
     display.print("IP: "); display.println(WiFi.localIP());
     display.print("RSSI: "); display.print(WiFi.RSSI()); display.println(" dBm");
-    display.print("Temp: "); display.print(tempC,1); display.println(" C");
-    display.printf("Cas: %02d:%02d:%02d", timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
+    display.print("Temp: ");
+    if (validTemp) display.print(String(tempC,1)); else display.print("--.-");
+    display.println(" C");
+    display.print("Cas: "); display.println(timeBuf2);
   } else {
     display.setTextSize(2);
-    display.setCursor(0, 20);
-    display.printf("%02d:%02d:%02d", timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
+    display.println(timeBuf2);
   }
   display.display();
-
+  
   delay(100);
 }
