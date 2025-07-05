@@ -195,8 +195,8 @@ void loop() {
   float tempC = sensors.getTempCByIndex(0);
   bool validTemp = (tempC > -100);
 
-  // Publish every 30s
-  if (millis() - lastMqtt > 30000) {
+  // Publish every 10s
+  if (millis() - lastMqtt > 10000) {
     time_t now = time(nullptr);
     struct tm* t = localtime(&now);
     char timeBuf[9];
