@@ -22,6 +22,7 @@
 #define SCL_PIN      D5  // GPIO14
 #define BUTTON_PIN   D3  // GPIO0
 #define ONE_WIRE_PIN D7  // GPIO13 for DS18B20
+#define VIN_DIVIDER_RATIO 4.33f  // delič 100 k/100 k
 
 // OLED display
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
@@ -159,7 +160,7 @@ void setup() {
   mqtt.setServer(config.mqtt_host, config.mqtt_port);
 
   // NTP
-  configTime(3600, 0, "pool.ntp.org", "time.nist.gov");
+  configTime(7200, 0, "pool.ntp.org", "time.nist.gov");
 }
 
 void loop() {
@@ -194,6 +195,9 @@ void loop() {
   sensors.requestTemperatures();
   float tempC = sensors.getTempCByIndex(0);
   bool validTemp = (tempC > -100);
+    // Meranie VIN cez delič 100 k/100 k
+  int raw = analogRead(A0);                        // 0–1023 pre 0–1 V
+  float vin = (raw * (1.0f / 1023.0f)) * VIN_DIVIDER_RATIO;
 
   // Publish every 10s
   if (millis() - lastMqtt > 10000) {
@@ -207,7 +211,9 @@ void loop() {
       "\"rssi\":" + String(WiFi.RSSI()) + "," +
       "\"uptime\":" + String(millis()/1000) + "," +
       "\"time\":\"" + timeBuf + "\"," +
-      "\"temperature\":\"" + (validTemp ? String(tempC,1) : String("--.-")) + "\"}";
+      "\"temperature\":\"" + (validTemp ? String(tempC,1) : String("--.-")) + "\"," +
+      "\"voltage\":"    + String(vin,2)             +
+      "}";
     mqtt.publish(config.mqtt_topic, payload.c_str());
     lastMqtt = millis();
   }
@@ -227,6 +233,9 @@ void loop() {
     display.print("IP: "); display.println(WiFi.localIP());
     display.print("RSSI: "); display.print(WiFi.RSSI()); display.println(" dBm");
     display.print("Temp: "); if (validTemp) display.print(String(tempC,1)); else display.print("--.-"); display.println(" C");
+    display.print("Vin: ");
+    display.print(vin,2);
+    display.println(" V");
     display.print("Cas: "); display.println(timeBuf2);
   } else {
     display.setTextSize(2);
