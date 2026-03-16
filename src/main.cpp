@@ -47,7 +47,7 @@ Config config;
 bool shouldSaveConfig = false;
 
 // State
-int currentScreen = 0;
+int currentScreen = 1;
 unsigned long lastMqtt    = 0;
 unsigned long buttonStart = 0;
 bool buttonHeld = false;
@@ -215,6 +215,11 @@ void loop() {
       "\"voltage\":"    + String(vin,2)             +
       "}";
     mqtt.publish(config.mqtt_topic, payload.c_str());
+    
+    // Publish raw temperature to a specific topic
+    String tempPayload = validTemp ? String(tempC,1) : String("--.-");
+    mqtt.publish("brew/sensor/temp", tempPayload.c_str());
+    
     lastMqtt = millis();
   }
 
