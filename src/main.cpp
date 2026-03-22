@@ -199,6 +199,30 @@ void loop() {
   int raw = analogRead(A0);                        // 0–1023 pre 0–1 V
   float vin = (raw * (1.0f / 1023.0f)) * VIN_DIVIDER_RATIO;
 
+  // Battery protection logic
+  bool oled_off = false;
+  if (vin >= 1.0f) {
+    if (vin < 3.33f) {
+      Serial.println("Battery critical (< 3.33V). Entering infinite deep sleep!");
+      display.ssd1306_command(SSD1306_DISPLAYOFF);
+      ESP.deepSleep(0); // 0 = infinite sleep
+    } else if (vin < 3.4f) {
+      oled_off = true;
+    }
+  }
+
+  static bool oled_was_off = false;
+  if (oled_off && !oled_was_off) {
+    display.ssd1306_command(SSD1306_DISPLAYOFF);
+    Serial.println("Battery low (< 3.4V). OLED turned off to save power.");
+    oled_was_off = true;
+  } else if (!oled_off && oled_was_off) {
+    display.ssd1306_command(SSD1306_DISPLAYON);
+    Serial.println("Battery OK (>= 3.4V). OLED turned back on.");
+    oled_was_off = false;
+  }
+
+
   // Publish every 10s
   if (millis() - lastMqtt > 10000) {
     time_t now = time(nullptr);
@@ -229,27 +253,29 @@ void loop() {
   char timeBuf2[9];
   snprintf(timeBuf2, sizeof(timeBuf2), "%02d:%02d:%02d", ti->tm_hour, ti->tm_min, ti->tm_sec);
 
-  display.clearDisplay();
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 0);
-  if (currentScreen == 0) {
-    display.setTextSize(1);
-    display.println(config.device_name);
-    display.print("IP: "); display.println(WiFi.localIP());
-    display.print("RSSI: "); display.print(WiFi.RSSI()); display.println(" dBm");
-    display.print("Temp: "); if (validTemp) display.print(String(tempC,1)); else display.print("--.-"); display.println(" C");
-    display.print("Vin: ");
-    display.print(vin,2);
-    display.println(" V");
-    display.print("Cas: "); display.println(timeBuf2);
-  } else {
-    display.setTextSize(2);
-    display.println(timeBuf2);
-    display.setTextSize(3);
-    display.setCursor(0, SCREEN_HEIGHT - 24);
-    display.print("C:"); if (validTemp) display.print(String(tempC,2)); else display.print("--.-"); display.println(" C");
+  if (!oled_off) {
+    display.clearDisplay();
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(0, 0);
+    if (currentScreen == 0) {
+      display.setTextSize(1);
+      display.println(config.device_name);
+      display.print("IP: "); display.println(WiFi.localIP());
+      display.print("RSSI: "); display.print(WiFi.RSSI()); display.println(" dBm");
+      display.print("Temp: "); if (validTemp) display.print(String(tempC,1)); else display.print("--.-"); display.println(" C");
+      display.print("Vin: ");
+      display.print(vin,2);
+      display.println(" V");
+      display.print("Cas: "); display.println(timeBuf2);
+    } else {
+      display.setTextSize(2);
+      display.println(timeBuf2);
+      display.setTextSize(3);
+      display.setCursor(0, SCREEN_HEIGHT - 24);
+      display.print("C:"); if (validTemp) display.print(String(tempC,2)); else display.print("--.-"); display.println(" C");
+    }
+    display.display();
   }
-  display.display();
 
   delay(100);
 }
